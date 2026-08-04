@@ -1,0 +1,37 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore tests/Emby.BestEpisodes.Tests/Emby.BestEpisodes.Tests.csproj
+
+      - name: Test
+        run: dotnet test tests/Emby.BestEpisodes.Tests/Emby.BestEpisodes.Tests.csproj --configuration Release --no-restore
+
+      - name: Build plugin
+        run: dotnet build src/Emby.BestEpisodes/Emby.BestEpisodes.csproj --configuration Release --no-restore
+
+      - name: Stage DLL
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item src/Emby.BestEpisodes/bin/Release/netstandard2.0/Emby.BestEpisodes.dll dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Emby.BestEpisodes-0.1.0
+          path: dist/Emby.BestEpisodes.dll
