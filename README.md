@@ -1,5 +1,7 @@
 # Emby Best Episodes
 
+[![Build](https://github.com/Conroy1988/Emby-Best-Episodes/actions/workflows/build.yml/badge.svg)](https://github.com/Conroy1988/Emby-Best-Episodes/actions/workflows/build.yml)
+
 An Emby Server plugin that creates a rating-sorted playlist for every season of a configured TV series. The original season order and metadata are never changed.
 
 The initial test target is **Ancient Aliens: Origins** on Emby Server **4.9.5.0** running natively on Windows.
@@ -56,4 +58,3 @@ If that folder does not exist, use the Emby dashboard's server paths/logs to loc
 ## Safety and rollback
 
 The plugin never modifies seasons or episode ratings. To roll back, stop Emby, remove `Emby.BestEpisodes.dll`, and restart. Generated playlists are normal Emby playlists and can then be deleted manually.
-
