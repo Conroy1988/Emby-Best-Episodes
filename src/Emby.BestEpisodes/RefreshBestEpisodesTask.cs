@@ -16,12 +16,14 @@ namespace Emby.BestEpisodes
         public RefreshBestEpisodesTask(
             ILibraryManager libraryManager,
             IPlaylistManager playlistManager,
+            IUserDataManager userDataManager,
             IUserManager userManager,
             ILogManager logManager)
         {
             _service = new BestEpisodesService(
                 libraryManager,
                 playlistManager,
+                userDataManager,
                 userManager,
                 logManager.GetLogger(Plugin.PluginName));
         }
@@ -29,7 +31,7 @@ namespace Emby.BestEpisodes
         public string Name => "Refresh best-rated episode playlists";
 
         public string Description =>
-            "Creates or refreshes one community-rating-sorted playlist per season for the configured TV series.";
+            "Creates or refreshes community-rating-sorted season playlists for the selected TV series.";
 
         public string Category => Plugin.PluginName;
 
@@ -53,4 +55,3 @@ namespace Emby.BestEpisodes
         }
     }
 }
-

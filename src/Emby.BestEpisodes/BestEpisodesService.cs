@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -15,19 +16,24 @@ namespace Emby.BestEpisodes
 {
     internal sealed class BestEpisodesService
     {
+        private static readonly SemaphoreSlim RefreshLock = new SemaphoreSlim(1, 1);
+
         private readonly ILibraryManager _libraryManager;
         private readonly IPlaylistManager _playlistManager;
+        private readonly IUserDataManager _userDataManager;
         private readonly IUserManager _userManager;
         private readonly ILogger _logger;
 
         public BestEpisodesService(
             ILibraryManager libraryManager,
             IPlaylistManager playlistManager,
+            IUserDataManager userDataManager,
             IUserManager userManager,
             ILogger logger)
         {
             _libraryManager = libraryManager;
             _playlistManager = playlistManager;
+            _userDataManager = userDataManager;
             _userManager = userManager;
             _logger = logger;
         }
@@ -42,42 +48,112 @@ namespace Emby.BestEpisodes
                 throw new ArgumentNullException(nameof(options));
             }
 
-            if (string.IsNullOrWhiteSpace(options.TargetSeriesName))
+            await RefreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            try
             {
-                throw new InvalidOperationException("A target series name must be configured.");
+                var owner = ResolveOwner(options.OwnerUserName);
+                var seriesItems = ResolveSeries(owner, options);
+                var playlists = GetVisiblePlaylists(owner).ToList();
+                var duplicateNames = new HashSet<string>(
+                    seriesItems.GroupBy(item => item.Name ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                        .Where(group => group.Count() > 1)
+                        .Select(group => group.Key),
+                    StringComparer.OrdinalIgnoreCase);
+
+                for (var index = 0; index < seriesItems.Count; index++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var series = seriesItems[index];
+                    var seriesLabel = duplicateNames.Contains(series.Name ?? string.Empty)
+                        ? string.Format("{0} (library ID {1})", series.Name, series.InternalId)
+                        : series.Name;
+                    await RefreshSeriesAsync(
+                            options,
+                            owner,
+                            series,
+                            seriesLabel,
+                            playlists,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+
+                    progress?.Report((index + 1) * 100d / seriesItems.Count);
+                }
+            }
+            finally
+            {
+                RefreshLock.Release();
+            }
+        }
+
+        internal static string BuildPlaylistName(string prefix, string seriesName, int seasonNumber)
+        {
+            var safePrefix = string.IsNullOrWhiteSpace(prefix) ? "Best Rated" : prefix.Trim();
+            var seasonLabel = seasonNumber == 0 ? "Specials" : "Season " + seasonNumber;
+            return string.Format("{0} - {1} - {2}", safePrefix, seriesName, seasonLabel);
+        }
+
+        internal static IReadOnlyCollection<long> ParseSeriesIds(string selectedSeriesIds)
+        {
+            if (string.IsNullOrWhiteSpace(selectedSeriesIds))
+            {
+                return Array.Empty<long>();
             }
 
-            var owner = ResolveOwner(options.OwnerUserName);
-            var series = ResolveSeries(owner, options.TargetSeriesName.Trim());
+            var ids = new HashSet<long>();
+            foreach (var value in selectedSeriesIds.Split(','))
+            {
+                if (long.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var id) && id > 0)
+                {
+                    ids.Add(id);
+                }
+            }
+
+            return ids;
+        }
+
+        private async Task RefreshSeriesAsync(
+            PluginOptions options,
+            User owner,
+            Series series,
+            string seriesLabel,
+            IList<Playlist> playlists,
+            CancellationToken cancellationToken)
+        {
             var episodes = GetEpisodes(owner, series);
+            var eligibleEpisodes = options.ExcludeWatchedEpisodes
+                ? episodes.Where(item => !IsPlayed(owner, item)).ToList()
+                : episodes;
+
+            var seasonNumbers = episodes
+                .Select(item => item.ParentIndexNumber ?? 0)
+                .Where(number => options.IncludeSpecials || number > 0)
+                .Distinct()
+                .OrderBy(number => number)
+                .ToList();
 
             var rankedSeasons = EpisodeRanker.RankBySeason(
-                episodes.Select(ToCandidate),
-                options.TopEpisodesPerSeason,
+                eligibleEpisodes.Select(ToCandidate),
+                (int)options.EpisodesPerSeason,
                 options.MinimumRating,
                 options.IncludeUnratedEpisodes,
                 options.IncludeSpecials);
 
-            if (rankedSeasons.Count == 0)
-            {
-                _logger.Warn(
-                    "No eligible episodes with community ratings were found for {0}. Existing playlists were left unchanged.",
-                    series.Name);
-                progress?.Report(100);
-                return;
-            }
-
-            var playlists = GetVisiblePlaylists(owner).ToList();
-            var completed = 0;
-
-            foreach (var season in rankedSeasons)
+            foreach (var seasonNumber in seasonNumbers)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                var playlistName = BuildPlaylistName(options.PlaylistPrefix, series.Name, season.Key);
-                var itemIds = season.Value.Select(item => item.ItemId).ToArray();
+                var playlistName = BuildPlaylistName(options.PlaylistPrefix, seriesLabel, seasonNumber);
                 var existing = playlists.FirstOrDefault(item =>
                     string.Equals(item.Name, playlistName, StringComparison.OrdinalIgnoreCase));
+                var itemIds = rankedSeasons.TryGetValue(seasonNumber, out var ranked)
+                    ? ranked.Select(item => item.ItemId).ToArray()
+                    : Array.Empty<long>();
+
+                if (existing == null && itemIds.Length == 0)
+                {
+                    continue;
+                }
 
                 if (existing == null)
                 {
@@ -97,17 +173,12 @@ namespace Emby.BestEpisodes
                     await ReplacePlaylistItems(existing, owner, itemIds, cancellationToken).ConfigureAwait(false);
                     _logger.Info("Updated playlist {0} with {1} episodes.", playlistName, itemIds.Length);
                 }
-
-                completed++;
-                progress?.Report(completed * 100d / rankedSeasons.Count);
             }
-        }
 
-        internal static string BuildPlaylistName(string prefix, string seriesName, int seasonNumber)
-        {
-            var safePrefix = string.IsNullOrWhiteSpace(prefix) ? "Best Rated" : prefix.Trim();
-            var seasonLabel = seasonNumber == 0 ? "Specials" : "Season " + seasonNumber;
-            return string.Format("{0} - {1} - {2}", safePrefix, seriesName, seasonLabel);
+            if (rankedSeasons.Count == 0)
+            {
+                _logger.Warn("No eligible episodes were found for {0}.", series.Name);
+            }
         }
 
         private User ResolveOwner(string configuredUserName)
@@ -137,29 +208,61 @@ namespace Emby.BestEpisodes
             return administrator;
         }
 
-        private Series ResolveSeries(User owner, string exactName)
+        private IReadOnlyList<Series> ResolveSeries(User owner, PluginOptions options)
         {
-            var matches = _libraryManager.GetItemList(new InternalItemsQuery(owner)
+            var allSeries = _libraryManager.GetItemList(new InternalItemsQuery(owner)
                 {
                     IncludeItemTypes = new[] { "Series" },
                     Recursive = true
                 })
                 .OfType<Series>()
-                .Where(item => string.Equals(item.Name, exactName, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => item.InternalId)
                 .ToList();
 
-            if (matches.Count == 0)
+            if (options.ProcessAllSeries)
             {
-                throw new InvalidOperationException("Series not found in Emby: " + exactName);
+                if (allSeries.Count == 0)
+                {
+                    throw new InvalidOperationException("No TV series are visible to the playlist owner.");
+                }
+
+                return allSeries;
             }
 
-            if (matches.Count > 1)
+            var selectedIds = new HashSet<long>(ParseSeriesIds(options.SelectedSeriesIds));
+            if (selectedIds.Count > 0)
             {
-                throw new InvalidOperationException(
-                    "More than one Emby series has the exact title '" + exactName + "'. Rename one or use a unique title.");
+                var selected = allSeries.Where(item => selectedIds.Contains(item.InternalId)).ToList();
+                var missingCount = selectedIds.Count - selected.Count;
+                if (missingCount > 0)
+                {
+                    _logger.Warn("Ignored {0} selected series that are no longer visible in the Emby library.", missingCount);
+                }
+
+                if (selected.Count == 0)
+                {
+                    throw new InvalidOperationException("None of the selected TV series are visible to the playlist owner.");
+                }
+
+                return selected;
             }
 
-            return matches[0];
+            if (!string.IsNullOrWhiteSpace(options.TargetSeriesName))
+            {
+                var legacyMatches = allSeries.Where(item => string.Equals(
+                        item.Name,
+                        options.TargetSeriesName.Trim(),
+                        StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (legacyMatches.Count == 1)
+                {
+                    return legacyMatches;
+                }
+            }
+
+            throw new InvalidOperationException("Select at least one TV series in the Best Episodes plugin settings.");
         }
 
         private IReadOnlyList<Episode> GetEpisodes(User owner, Series series)
@@ -183,6 +286,12 @@ namespace Emby.BestEpisodes
                     AllowGlobalLists = true
                 })
                 .OfType<Playlist>();
+        }
+
+        private bool IsPlayed(User owner, Episode episode)
+        {
+            var userData = _userDataManager.GetUserData(owner, episode);
+            return userData != null && userData.Played;
         }
 
         private static EpisodeCandidate ToCandidate(Episode episode)
@@ -230,4 +339,3 @@ namespace Emby.BestEpisodes
         }
     }
 }
-

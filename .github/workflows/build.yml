@@ -36,23 +36,23 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Emby.BestEpisodes-0.1.0
+          name: Emby.BestEpisodes-0.2.0
           path: dist/Emby.BestEpisodes.dll
 
-      - name: Publish v0.1.0 prerelease
+      - name: Publish v0.2.0 prerelease
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view v0.1.0 2>$null
+          gh release view v0.2.0 2>$null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload v0.1.0 dist/Emby.BestEpisodes.dll --clobber
+            gh release upload v0.2.0 dist/Emby.BestEpisodes.dll --clobber
           }
           else {
-            gh release create v0.1.0 dist/Emby.BestEpisodes.dll `
+            gh release create v0.2.0 dist/Emby.BestEpisodes.dll `
               --target "$env:GITHUB_SHA" `
-              --title "Emby Best Episodes 0.1.0" `
-              --notes "First Windows test build for Emby Server 4.9.5.0. Preconfigured for Ancient Aliens: Origins." `
+              --title "Emby Best Episodes 0.2.0" `
+              --notes "Adds a library-backed multi-series picker, top 5/10/20/all limits, minimum rating, watched filtering, all-series mode, and automatic refresh after library scans." `
               --prerelease
           }

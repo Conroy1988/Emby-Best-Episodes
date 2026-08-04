@@ -12,7 +12,9 @@ namespace Emby.BestEpisodes.Ranking
             bool includeUnrated,
             bool includeSpecials)
         {
-            var limit = maximumPerSeason < 1 ? 1 : maximumPerSeason;
+            var limit = maximumPerSeason == 0
+                ? int.MaxValue
+                : maximumPerSeason < 0 ? 1 : maximumPerSeason;
             var floor = minimumRating < 0 ? 0 : minimumRating > 10 ? 10 : minimumRating;
 
             return episodes
@@ -33,4 +35,3 @@ namespace Emby.BestEpisodes.Ranking
         }
     }
 }
-
