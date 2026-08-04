@@ -47,6 +47,32 @@ namespace Emby.BestEpisodes.Tests
         }
 
         [Fact]
+        public void ZeroLimitIncludesAllEligibleEpisodes()
+        {
+            var result = EpisodeRanker.RankBySeason(
+                new[]
+                {
+                    Episode(1, 1, 1, 7.0f),
+                    Episode(2, 1, 2, 9.0f),
+                    Episode(3, 1, 3, 8.0f)
+                },
+                0,
+                0,
+                false,
+                false);
+
+            Assert.Equal(new long[] { 2, 3, 1 }, result[1].Select(item => item.ItemId));
+        }
+
+        [Fact]
+        public void ParsesCommaSeparatedSeriesIdsAndIgnoresInvalidValues()
+        {
+            var result = BestEpisodesService.ParseSeriesIds("42, 7,42,nope,-1");
+
+            Assert.Equal(new long[] { 7, 42 }, result.OrderBy(value => value));
+        }
+
+        [Fact]
         public void ExcludesUnratedEpisodesByDefault()
         {
             var result = Rank(
@@ -113,4 +139,3 @@ namespace Emby.BestEpisodes.Tests
         }
     }
 }
-
